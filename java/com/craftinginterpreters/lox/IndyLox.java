@@ -53,15 +53,17 @@ public class IndyLox {
     IntStream.range(0, 20).forEach(parameterCount -> globals.define("$bridge" + parameterCount, asCallable(parameterCount, arguments -> {
       Executable executable = (Executable)arguments.get(0);
       Class<?>[] parameterTypes = executable.getParameterTypes();
-      Object thiz = unboxTo(arguments.get(1), executable.getDeclaringClass());
+      LoxInstance thiz = (LoxInstance)arguments.get(1);
       Object[] args = IntStream.range(0, arguments.size() - 2).mapToObj(i -> unboxTo(arguments.get(i + 2), parameterTypes[i])).toArray();
       try {
         if (executable instanceof Method) {
           Method method = (Method)executable;
-          return box(method.invoke(thiz, args));
+          return box(method.invoke(unwrap(thiz), args));
         }
         Constructor<?> constructor = (Constructor<?>)executable;
-        return box(constructor.newInstance(thiz, args));
+        Object result = constructor.newInstance(args);
+        thiz.fields.put("wrapped", result);
+        return thiz;
       } catch(IllegalAccessException | InstantiationException | InvocationTargetException e) {
         throw new RuntimeError(token(""), e.getMessage());
       }
@@ -90,10 +92,19 @@ public class IndyLox {
     Map<String, Method> methodMap =
         Arrays.stream(type.getMethods())
         .filter(m -> !Modifier.isStatic(m.getModifiers()))
+        .filter(IndyLox::isNotDeprecated)
         .collect(Collectors.toMap(Method::getName, Function.identity(), IndyLox::moreSpecific));
     Map<String, LoxFunction> functionMap = methodMap.entrySet().stream().collect(Collectors.toMap(e -> e.getKey(), e -> asFunction(e.getValue())));
-    Arrays.stream(type.getConstructors()).reduce(IndyLox::moreSpecific).map(IndyLox::asFunction).ifPresent(init -> functionMap.put("init", init));
+    Arrays.stream(type.getConstructors())
+       .filter(IndyLox::isNotDeprecated)
+       .reduce(IndyLox::moreSpecific)
+       .map(IndyLox::asFunction)
+       .ifPresent(init -> functionMap.put("init", init));
     return functionMap;
+  }
+  
+  private static boolean isNotDeprecated(Executable executable) {
+    return !executable.isAnnotationPresent(Deprecated.class);
   }
   
   private static <E extends Executable> E moreSpecific(E method, E existing) {
@@ -155,7 +166,7 @@ public class IndyLox {
     Map<Expr, Integer> locals = getLocals(INTERPRETER);
     locals.putAll(funLocals);
     
-    return new LoxFunction(declaration, new Environment(), false /* FIXME */);
+    return new LoxFunction(declaration, new Environment(), executable instanceof Constructor);
   }
 
   static Object box(Object javaObject) {
@@ -201,6 +212,9 @@ public class IndyLox {
     }
     if (loxObject instanceof Double && type==int.class) {
       return (int)(double)(Double)loxObject;
+    }
+    if (loxObject instanceof Double && type==long.class) {
+      return (long)(double)(Double)loxObject;
     }
     return loxObject;
   }
