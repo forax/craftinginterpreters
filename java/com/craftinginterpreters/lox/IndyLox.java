@@ -1,6 +1,7 @@
 package com.craftinginterpreters.lox;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
@@ -8,26 +9,43 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Parameter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 // Warning, unlike the other Java file, IndyLox requires Java 8 !
 public class IndyLox {
   private static final Interpreter INTERPRETER;
   private static final Field LOXINSTANCE_KLASS = getField(LoxInstance.class, "klass");
   private static final Field INTERPRETER_LOCALS = getField(Interpreter.class, "locals");
+  private static List<String> ARGS;
   
-  static final ClassValue<LoxClass> CACHE = new ClassValue<LoxClass>() {
+  static final ClassValue<LoxClass> CLASS_CACHE = new ClassValue<LoxClass>() {
     @Override
     protected LoxClass computeValue(Class<?> type) {
       Class<?> supertype = type.getSuperclass();
-      LoxClass superClass = (supertype == null)? null: CACHE.get(supertype);
-      return new LoxClass(type.getName(), superClass, gatherMethods(type));
+      LoxClass superClass = (supertype == null)? null: CLASS_CACHE.get(supertype);
+      
+      Map<String, LoxFunction> functionMap = gatherMethods(type, false);
+      gatherInit(type).ifPresent(init -> functionMap.put("init", init));
+      return new LoxClass(type.getName(), superClass, functionMap);
+    }
+  };
+  
+  static final ClassValue<LoxInstance> STATIC_CACHE = new ClassValue<LoxInstance>() {
+    @Override
+    protected LoxInstance computeValue(Class<?> type) {
+      LoxClass loxClass = new LoxClass(type.getName() + "$static", null, gatherMethods(type, true));
+      return new LoxInstance(loxClass);
     }
   };
   
@@ -41,16 +59,11 @@ public class IndyLox {
     }
     
     Environment globals = interpreter.globals;
-    globals.define("import", asCallable(1, arguments -> {
-      try {
-        return CACHE.get(Class.forName((String) arguments.get(0)));
-      } catch (ClassNotFoundException e) {
-        throw new RuntimeError(token(""), e.getMessage());
-      }
-    }));
+    globals.define("import", asCallable(1, arguments -> CLASS_CACHE.get(forName((String) arguments.get(0)))));
+    globals.define("static", asCallable(1, arguments -> STATIC_CACHE.get(forName(((LoxClass)arguments.get(0)).name))));
     globals.define("wrap", asCallable(1, arguments -> wrap(arguments.get(0))));
     globals.define("unwrap", asCallable(1, arguments -> unwrap(arguments.get(0))));
-    IntStream.range(0, 20).forEach(parameterCount -> globals.define("$bridge" + parameterCount, asCallable(parameterCount, arguments -> {
+    globals.define("$bridge", asCallable(2, arguments -> {
       Executable executable = (Executable)arguments.get(0);
       Class<?>[] parameterTypes = executable.getParameterTypes();
       LoxInstance thiz = (LoxInstance)arguments.get(1);
@@ -67,9 +80,34 @@ public class IndyLox {
       } catch(IllegalAccessException | InstantiationException | InvocationTargetException e) {
         throw new RuntimeError(token(""), e.getMessage());
       }
-    })));
+    }));
+    
+    globals.define("parse", asCallable(1, arguments -> {
+      String filename = (String)arguments.get(0);
+      Path path = Paths.get(filename);
+      String source;
+      try(Stream<String> lines = Files.lines(path)) {
+        source = lines.collect(Collectors.joining( "\n"));
+      } catch (IOException e) {
+        throw new UncheckedIOException(e);
+      }
+      
+      Scanner scanner = new Scanner(source);
+      List<Token> tokens = scanner.scanTokens();
+      Parser parser = new Parser(tokens);
+      return parser.parse();
+    }));
+    globals.define("ARGS", asCallable(0, __ -> wrap(ARGS)));
     
     INTERPRETER = interpreter;
+  }
+  
+  private static Class<?> forName(String name) {
+    try {
+      return Class.forName(name);
+    } catch (ClassNotFoundException e) {
+      throw new RuntimeError(token(""), e.getMessage());
+    }
   }
   
   private static Callable asCallable(int parameterCount, Function<List<Object>, Object> fun) {
@@ -88,19 +126,22 @@ public class IndyLox {
   
   
   
-  static Map<String, LoxFunction> gatherMethods(Class<?> type) {
+  static Map<String, LoxFunction> gatherMethods(Class<?> type, boolean isStatic) {
     Map<String, Method> methodMap =
         Arrays.stream(type.getMethods())
-        .filter(m -> !Modifier.isStatic(m.getModifiers()))
+        .filter(m -> Modifier.isStatic(m.getModifiers()) == isStatic)
         .filter(IndyLox::isNotDeprecated)
         .collect(Collectors.toMap(Method::getName, Function.identity(), IndyLox::moreSpecific));
     Map<String, LoxFunction> functionMap = methodMap.entrySet().stream().collect(Collectors.toMap(e -> e.getKey(), e -> asFunction(e.getValue())));
-    Arrays.stream(type.getConstructors())
-       .filter(IndyLox::isNotDeprecated)
-       .reduce(IndyLox::moreSpecific)
-       .map(IndyLox::asFunction)
-       .ifPresent(init -> functionMap.put("init", init));
+    
     return functionMap;
+  }
+  
+  static Optional<LoxFunction> gatherInit(Class<?> type) {
+    return Arrays.stream(type.getConstructors())
+      .filter(IndyLox::isNotDeprecated)
+      .reduce(IndyLox::moreSpecific)
+      .map(IndyLox::asFunction);
   }
   
   private static boolean isNotDeprecated(Executable executable) {
@@ -132,7 +173,19 @@ public class IndyLox {
       // type are not comparable, choose by lexicographic order of their name, at least this is a stable order
       return methodType.getName().compareTo(existingType.getName()) > 0? method: existing;
     }
-    throw new AssertionError("same name, same parameter types ??");
+    
+    Class<?> methodOwner = method.getDeclaringClass();
+    Class<?> existingOwner = existing.getDeclaringClass();
+    if (methodOwner.isAssignableFrom(existingOwner)) {
+      return existing;
+    }
+    if (existingOwner.isAssignableFrom(methodOwner)) {
+      return method;
+    }
+    
+    // here it should be abstract methods with the same name and the same parameter types but
+    // from two unrelated declaring class, just picking one should be ok.
+    return methodOwner.getName().compareTo(existingOwner.getName()) > 0? method: existing;
   }
 
   static Token token(String name) {
@@ -156,7 +209,7 @@ public class IndyLox {
     }
     
     List<Stmt> body = Arrays.asList(
-        new Stmt.Return(keyword(TokenType.RETURN), new Expr.Call(new Expr.Variable(token("$bridge" + executable.getParameterCount())), keyword(TokenType.LEFT_PAREN), argList)));
+        new Stmt.Return(keyword(TokenType.RETURN), new Expr.Call(new Expr.Variable(token("$bridge")), keyword(TokenType.LEFT_PAREN), argList)));
     Stmt.Function declaration = new Stmt.Function(token(executable.getName()), parameterList, body);
     
     Resolver resolver = new Resolver();
@@ -174,12 +227,12 @@ public class IndyLox {
       return javaObject;
     }
     if (javaObject instanceof Class) {
-      return CACHE.get((Class<?>)javaObject);
+      return CLASS_CACHE.get((Class<?>)javaObject);
     }
     return wrap(javaObject);
   }
   static Object wrap(Object object) {
-    LoxClass loxClass = CACHE.get(object.getClass());
+    LoxClass loxClass = CLASS_CACHE.get(object.getClass());
     LoxInstance instance = new LoxInstance(loxClass);
     instance.fields.put("wrapped", object);
     return instance;
@@ -247,6 +300,7 @@ public class IndyLox {
   }
   
   public static void main(String[] args) throws IOException {
-    Lox.main(args);
+    ARGS = Arrays.stream(args).skip(1).collect(Collectors.toList());
+    Lox.main(new String[] { args[0] });
   }
 }

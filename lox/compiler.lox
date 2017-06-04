@@ -1,0 +1,5 @@
+// this code requires the indylox lox <-> java bridge !
+
+var statements = parse(ARGS().get(0));
+
+print statements;
