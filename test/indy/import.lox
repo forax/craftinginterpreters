@@ -1,0 +1,2 @@
+var String = import("java.lang.String");
+print String;

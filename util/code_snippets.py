@@ -294,6 +294,9 @@ def load_file(source_code, source_dir, path):
   if relative == "com/craftinginterpreters/lox/Expr.java": return
   if relative == "com/craftinginterpreters/lox/Stmt.java": return
 
+  # Don't process IndyLox
+  if relative == "com/craftinginterpreters/lox/IndyLox.java": return
+
   file = SourceFile(relative)
   source_code.files.append(file)
 

@@ -1,0 +1,9 @@
+var s = "hello";
+var b = wrap(s);
+
+print b;
+print b.wrapped;
+
+print b.toString();
+
+print wrap("foobar").substring(0, 3);
