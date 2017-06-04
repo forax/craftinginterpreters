@@ -1,0 +1,7 @@
+var Point = import("java.awt.Point");
+
+var p = Point(2, 3);
+
+print p.x();
+print p.y();
+

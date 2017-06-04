@@ -1,5 +1,34 @@
 // this code requires the indylox lox <-> java bridge !
 
-var statements = parse(ARGS().get(0));
+var HashMap = import("java.util.HashMap");
+var Function = import("java.util.function.Function");
 
-print statements;
+var PrintStmt = import("com.craftinginterpreters.lox.Stmt$Print");
+
+class Visitor {
+  init() {
+    this.map = HashMap(16, 0.75);
+  }
+  register(type, action) {
+    this.map.put(type, action);
+    return this;
+  }
+  call(value) {
+    var action = this.map.get(klass(value));
+    return action(value);
+  } 
+}
+
+var visitor = Visitor();
+fun visitPrint(stmt) {
+  print stmt;
+}
+visitor.register(PrintStmt, visitPrint);
+
+fun visitAll(visitor, list) {
+  fun lambda(e) { visitor.call(e); }
+  list.forEach(lambda);
+}
+
+var statements = parse(ARGS().get(0));
+visitAll(visitor, statements);

@@ -6,14 +6,17 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Member;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Parameter;
+import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -24,7 +27,7 @@ import java.util.stream.Stream;
 
 // Warning, unlike the other Java file, IndyLox requires Java 8 !
 public class IndyLox {
-  private static final Interpreter INTERPRETER;
+  static final Interpreter INTERPRETER;
   private static final Field LOXINSTANCE_KLASS = getField(LoxInstance.class, "klass");
   private static final Field INTERPRETER_LOCALS = getField(Interpreter.class, "locals");
   private static List<String> ARGS;
@@ -35,7 +38,9 @@ public class IndyLox {
       Class<?> supertype = type.getSuperclass();
       LoxClass superClass = (supertype == null)? null: CLASS_CACHE.get(supertype);
       
-      Map<String, LoxFunction> functionMap = gatherMethods(type, false);
+      HashMap<String, LoxFunction> functionMap = new HashMap<>();
+      functionMap.putAll(gatherFields(type, false));
+      functionMap.putAll(gatherMethods(type, false));
       gatherInit(type).ifPresent(init -> functionMap.put("init", init));
       return new LoxClass(type.getName(), superClass, functionMap);
     }
@@ -60,20 +65,27 @@ public class IndyLox {
     
     Environment globals = interpreter.globals;
     globals.define("import", asCallable(1, arguments -> CLASS_CACHE.get(forName((String) arguments.get(0)))));
-    globals.define("static", asCallable(1, arguments -> STATIC_CACHE.get(forName(((LoxClass)arguments.get(0)).name))));
+    globals.define("static", asCallable(1, arguments -> STATIC_CACHE.get(toClass((LoxClass)arguments.get(0)))));
+    globals.define("klass", asCallable(1, arguments -> getKlass((LoxInstance)arguments.get(0))));
     globals.define("wrap", asCallable(1, arguments -> wrap(arguments.get(0))));
     globals.define("unwrap", asCallable(1, arguments -> unwrap(arguments.get(0))));
+    globals.define("unboxTo", asCallable(1, arguments -> unboxTo(arguments.get(0), toClass((LoxClass)arguments.get(1)))));
     globals.define("$bridge", asCallable(2, arguments -> {
-      Executable executable = (Executable)arguments.get(0);
-      Class<?>[] parameterTypes = executable.getParameterTypes();
+      Member member = (Member)arguments.get(0);
       LoxInstance thiz = (LoxInstance)arguments.get(1);
-      Object[] args = IntStream.range(0, arguments.size() - 2).mapToObj(i -> unboxTo(arguments.get(i + 2), parameterTypes[i])).toArray();
       try {
-        if (executable instanceof Method) {
-          Method method = (Method)executable;
+        if (member instanceof Field) {
+          Field field = (Field)member;
+          return box(field.get(unwrap(thiz)));
+        }
+        
+        Class<?>[] parameterTypes = ((Executable)member).getParameterTypes();
+        Object[] args = IntStream.range(0, arguments.size() - 2).mapToObj(i -> unboxTo(arguments.get(i + 2), parameterTypes[i])).toArray();
+        if (member instanceof Method) {
+          Method method = (Method)member;
           return box(method.invoke(unwrap(thiz), args));
         }
-        Constructor<?> constructor = (Constructor<?>)executable;
+        Constructor<?> constructor = (Constructor<?>)member;
         Object result = constructor.newInstance(args);
         thiz.fields.put("wrapped", result);
         return thiz;
@@ -87,7 +99,7 @@ public class IndyLox {
       Path path = Paths.get(filename);
       String source;
       try(Stream<String> lines = Files.lines(path)) {
-        source = lines.collect(Collectors.joining( "\n"));
+        source = lines.collect(Collectors.joining("\n"));
       } catch (IOException e) {
         throw new UncheckedIOException(e);
       }
@@ -95,7 +107,7 @@ public class IndyLox {
       Scanner scanner = new Scanner(source);
       List<Token> tokens = scanner.scanTokens();
       Parser parser = new Parser(tokens);
-      return parser.parse();
+      return wrap(parser.parse());
     }));
     globals.define("ARGS", asCallable(0, __ -> wrap(ARGS)));
     
@@ -132,9 +144,14 @@ public class IndyLox {
         .filter(m -> Modifier.isStatic(m.getModifiers()) == isStatic)
         .filter(IndyLox::isNotDeprecated)
         .collect(Collectors.toMap(Method::getName, Function.identity(), IndyLox::moreSpecific));
-    Map<String, LoxFunction> functionMap = methodMap.entrySet().stream().collect(Collectors.toMap(e -> e.getKey(), e -> asFunction(e.getValue())));
-    
-    return functionMap;
+    return methodMap.entrySet().stream().collect(Collectors.toMap(e -> e.getKey(), e -> asFunction(e.getValue())));
+  }
+  
+  static Map<String, LoxFunction> gatherFields(Class<?> type, boolean isStatic) {
+    return Arrays.stream(type.getDeclaredFields())
+        .filter(f -> Modifier.isStatic(f.getModifiers()) == isStatic)
+        .peek(f -> f.setAccessible(true))
+        .collect(Collectors.toMap(Field::getName, IndyLox::asFunction));
   }
   
   static Optional<LoxFunction> gatherInit(Class<?> type) {
@@ -196,35 +213,51 @@ public class IndyLox {
   }
   
   private static LoxFunction asFunction(Executable executable) {
+    return asMember(executable, (member, parameterList, argList) -> {
+      Parameter[] parameters = member.getParameters();
+      for(Parameter parameter: parameters) {
+        Token token = token(parameter.getName());
+        parameterList.add(token);
+        argList.add(new Expr.Variable(token));
+      }  
+    });
+  }
+  private static LoxFunction asFunction(Field field) {
+    return asMember(field, (member, parameterList, argList) -> {  /* empty */ });
+  }
+
+  interface MemberConsumer<M> {
+    void acept(M member, List<Token> parameterList, List<Expr> argList);
+  }
+  
+  private static <M extends Member> LoxFunction asMember(M member, MemberConsumer<M> consumer) {
     ArrayList<Token> parameterList = new ArrayList<>();
     ArrayList<Expr> argList = new ArrayList<>();
-    argList.add(new Expr.Literal(executable));
+    argList.add(new Expr.Literal(member));
     argList.add(new Expr.This(token("this")));
-    
-    Parameter[] parameters = executable.getParameters();
-    for(Parameter parameter: parameters) {
-      Token token = token(parameter.getName());
-      parameterList.add(token);
-      argList.add(new Expr.Variable(token));
-    }
+    consumer.acept(member, parameterList, argList);
     
     List<Stmt> body = Arrays.asList(
         new Stmt.Return(keyword(TokenType.RETURN), new Expr.Call(new Expr.Variable(token("$bridge")), keyword(TokenType.LEFT_PAREN), argList)));
-    Stmt.Function declaration = new Stmt.Function(token(executable.getName()), parameterList, body);
+    Stmt.Function declaration = new Stmt.Function(token(member.getName()), parameterList, body);
     
     Resolver resolver = new Resolver();
     Map<Expr, Integer> funLocals = resolver.resolve(
-        Arrays.asList(new Stmt.Class(token(executable.getDeclaringClass().getName()), null, Arrays.asList(declaration))));
+        Arrays.asList(new Stmt.Class(token(member.getDeclaringClass().getName()), null, Arrays.asList(declaration))));
     
     Map<Expr, Integer> locals = getLocals(INTERPRETER);
     locals.putAll(funLocals);
     
-    return new LoxFunction(declaration, new Environment(), executable instanceof Constructor);
+    return new LoxFunction(declaration, new Environment(), member instanceof Constructor);
   }
-
+  
   static Object box(Object javaObject) {
-    if (javaObject instanceof Double || javaObject instanceof String || javaObject instanceof Boolean) {
+    if (javaObject instanceof Double || javaObject instanceof String || javaObject instanceof Boolean ||
+        javaObject instanceof LoxInstance || javaObject instanceof LoxFunction || javaObject instanceof LoxClass) {
       return javaObject;
+    }
+    if (javaObject instanceof Number) {
+      return ((Number)javaObject).doubleValue();
     }
     if (javaObject instanceof Class) {
       return CLASS_CACHE.get((Class<?>)javaObject);
@@ -232,12 +265,18 @@ public class IndyLox {
     return wrap(javaObject);
   }
   static Object wrap(Object object) {
+    if (object == null) {
+      return null;
+    }
     LoxClass loxClass = CLASS_CACHE.get(object.getClass());
     LoxInstance instance = new LoxInstance(loxClass);
     instance.fields.put("wrapped", object);
     return instance;
   }
   static Object unwrap(Object object) {
+    if (object == null) {
+      return null;
+    }
     LoxInstance instance = (LoxInstance)object;
     LoxClass klass = getKlass(instance);
     if (klass.name.indexOf('.') == -1) {
@@ -250,12 +289,22 @@ public class IndyLox {
       return unwrap(loxObject);
     }
     if (loxObject instanceof LoxFunction) {
-      throw new RuntimeError(token(""), "can not convert a lox function to a Java instance");
+      LoxFunction function = (LoxFunction)loxObject;
+      if (type == Object.class) {
+        return function;
+      }
+      if (type.isInterface()) {
+        return lambdaProxy(function, type);
+      }
+      throw new RuntimeError(token(""), "can not convert a lox function " + function + " to a Java instance of " + type.getName());
     }
     if (loxObject instanceof LoxClass) {
       LoxClass klass = (LoxClass)loxObject;
+      if (type == Object.class) {
+        return klass;
+      }
       if (klass.name.indexOf('.') == -1) {
-        throw new RuntimeError(token(""), "can not convert a lox class to a Java instance");
+        throw new RuntimeError(token(""), "can not convert a lox class to a Java instance of " + type.getName());
       }
       try {
         return Class.forName(klass.name);
@@ -269,7 +318,21 @@ public class IndyLox {
     if (loxObject instanceof Double && type==long.class) {
       return (long)(double)(Double)loxObject;
     }
+    if (loxObject instanceof Double && type==float.class) {
+      return (float)(double)(Double)loxObject;
+    }
     return loxObject;
+  }
+
+  private static Object lambdaProxy(LoxFunction function, Class<?> type) {
+    return Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[] { type },  (proxy, method, args) -> {
+      List<Object> arguments = Arrays.stream(args).map(arg -> box(arg)).collect(Collectors.toList());
+      return unboxTo(function.call(INTERPRETER, arguments), method.getReturnType());
+    });
+  }
+  
+  private static Class<?> toClass(LoxClass loxClass) {
+    return (Class<?>)unboxTo(loxClass, Class.class);
   }
   
   private static Field getField(Class<?> clazz, String name) {
