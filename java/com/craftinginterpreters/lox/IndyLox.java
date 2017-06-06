@@ -155,11 +155,13 @@ public class IndyLox {
   }
   
   static Map<String, LoxFunction> gatherMethods(Class<?> type, boolean isStatic) {
+    Stream<Method> declaredMethods = Arrays.stream(type.getDeclaredMethods());
+    Stream<Method> interfaceMethods = Arrays.stream(type.getInterfaces()).flatMap(intf -> Arrays.stream(intf.getMethods()));
     Map<String, Map<Integer, Method>> methodMap =
-        Arrays.stream(type.getMethods())
+        (isStatic? declaredMethods: Stream.concat(interfaceMethods, declaredMethods))
         .filter(m -> Modifier.isStatic(m.getModifiers()) == isStatic)
         .filter(IndyLox::isNotDeprecated)
-        .peek(f -> f.setAccessible(true))   //FIXME
+        .filter(IndyLox::isVisible)
         .collect(Collectors.groupingBy(Method::getName,
                    Collectors.toMap(m -> m.getParameterCount(), Function.identity(), IndyLox::moreSpecific)));
     HashMap<String, LoxFunction> functionMap = new HashMap<>();
@@ -178,15 +180,26 @@ public class IndyLox {
   static Map<String, LoxFunction> gatherFields(Class<?> type, boolean isStatic) {
     return Arrays.stream(type.getDeclaredFields())
         .filter(f -> Modifier.isStatic(f.getModifiers()) == isStatic)
-        .peek(f -> f.setAccessible(true))
+        .filter(IndyLox::isVisible)
+        .peek(f -> { if (isInCraftingInterpretersPackage(f)) { f.setAccessible(true); }})
         .collect(Collectors.toMap(Field::getName, IndyLox::asFunction));
   }
   
   static Optional<LoxFunction> gatherInit(Class<?> type) {
     return Arrays.stream(type.getDeclaredConstructors())
       .filter(IndyLox::isNotDeprecated)
+      .filter(IndyLox::isVisible)
       .reduce(IndyLox::moreSpecific)
       .map(IndyLox::asFunction);
+  }
+  
+  private static boolean isInCraftingInterpretersPackage(Member member) {
+    return member.getDeclaringClass().getName().startsWith("com.craftinginterpreters.lox.");
+  }
+  
+  private static boolean isVisible(Member member) {
+    return (Modifier.isPublic(member.getDeclaringClass().getModifiers()) && Modifier.isPublic(member.getModifiers())) ||
+        isInCraftingInterpretersPackage(member) && (member instanceof Field || !Modifier.isPrivate(member.getModifiers()));
   }
   
   private static boolean isNotDeprecated(Executable executable) {
