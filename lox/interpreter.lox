@@ -1,0 +1,542 @@
+// this code requires the indylox lox <-> java bridge !
+
+var RuntimeException = import("java.lang.RuntimeException");
+var HashMap = import("java.util.HashMap");
+
+var IntStream = static(import("java.util.stream.IntStream"));
+var Collectors = static(import("java.util.stream.Collectors"));
+
+var Boolean = import("java.lang.Boolean");
+var Double = import("java.lang.Double");
+var String = import("java.lang.String");
+var Lox = static(import("com.craftinginterpreters.lox.Lox"));
+var LoxClass = import("com.craftinginterpreters.lox.LoxClass");
+var LoxFunction = import("com.craftinginterpreters.lox.LoxFunction");
+var LoxInstance = import("com.craftinginterpreters.lox.LoxInstance");
+var Return = import("com.craftinginterpreters.lox.Return");
+var Resolver = import("com.craftinginterpreters.lox.Resolver");
+var RuntimeError = import("com.craftinginterpreters.lox.RuntimeError");
+
+var TokenType = static(import("com.craftinginterpreters.lox.TokenType"));
+
+var StmtBlock = import("com.craftinginterpreters.lox.Stmt$Block");
+var StmtClass = import("com.craftinginterpreters.lox.Stmt$Class");
+var StmtExpression = import("com.craftinginterpreters.lox.Stmt$Expression");
+var StmtFunction = import("com.craftinginterpreters.lox.Stmt$Function");
+var StmtIf = import("com.craftinginterpreters.lox.Stmt$If");
+var StmtPrint = import("com.craftinginterpreters.lox.Stmt$Print");
+var StmtReturn = import("com.craftinginterpreters.lox.Stmt$Return");
+var StmtVar = import("com.craftinginterpreters.lox.Stmt$Var");
+var StmtWhile = import("com.craftinginterpreters.lox.Stmt$While");
+
+var ExprAssign = import("com.craftinginterpreters.lox.Expr$Assign");
+var ExprBinary = import("com.craftinginterpreters.lox.Expr$Binary");
+var ExprCall = import("com.craftinginterpreters.lox.Expr$Call");
+var ExprGet = import("com.craftinginterpreters.lox.Expr$Get");
+var ExprGrouping = import("com.craftinginterpreters.lox.Expr$Grouping");
+var ExprLiteral = import("com.craftinginterpreters.lox.Expr$Literal");
+var ExprLogical = import("com.craftinginterpreters.lox.Expr$Logical");
+var ExprSet = import("com.craftinginterpreters.lox.Expr$Set");
+var ExprSuper = import("com.craftinginterpreters.lox.Expr$Super");
+var ExprThis = import("com.craftinginterpreters.lox.Expr$This");
+var ExprUnary = import("com.craftinginterpreters.lox.Expr$Unary");
+var ExprVariable = import("com.craftinginterpreters.lox.Expr$Variable");
+
+class Visitor {
+  init() {
+    this.map = HashMap(16, 0.75);
+  }
+  register(type, action) {
+    if (klass(action) != LoxFunction) {
+      throw(RuntimeException("this is not a function: " + asString(action), nil));
+    }
+  
+    this.map.put(type, action);
+    return this;
+  }
+  call(value) {
+    var action = this.map.get(klass(value));
+    if (action == nil) {
+      throw(RuntimeException("no action for: " + asString(klass(value)), nil));
+    }
+    
+    print "visit " + asString(klass(value));
+    return action(value);
+  } 
+}
+
+class Environment {
+  init(enclosing) {
+    this.enclosing = nil;
+    this.values = HashMap(16, 0.75);
+  }
+
+  get(name) {
+    if (this.values.containsKey(name.lexeme())) {
+      return this.values.get(name.lexeme());
+    }
+
+    if (this.enclosing != nil) return this.enclosing.get(name);
+
+    throw(RuntimeError(name,
+        "Undefined variable '" + name.lexeme() + "'."));
+  }
+
+  assign(name, value) {
+    if (this.values.containsKey(name.lexeme())) {
+      this.values.put(name.lexeme(), value);
+      return;
+    }
+
+    if (this.enclosing != nil) {
+      this.enclosing.assign(name, value);
+      return;
+    }
+
+    throw(RuntimeError(name,
+        "Undefined variable '" + name.lexeme() +"'."));
+  }
+
+  define(name, value) {
+    this.values.put(name, value);
+  }
+
+  getAt(distance, name) {
+    var environment = this;
+    var i = 0;
+    while(i < distance) {
+      environment = environment.enclosing;
+      i = i + 1;
+    }
+    return environment.values.get(name);
+  }
+
+  assignAt(distance, name, value) {
+    var environment = this;
+    var i = 0;
+    while (i < distance) {
+      environment = environment.enclosing;
+      i = i + 1;
+    }
+    environment.values.put(name.lexeme(), value);
+  }
+}
+
+fun tryFinally(action, cleanup) {
+  fun both() { action(); cleanup(); }
+  try(both, RuntimeException, cleanup);
+}
+
+fun initUnaryBuiltins() {
+  var map = HashMap(16, 0.75);
+  fun bang(expr, right) { return !isTruthy(right); }
+  map.put(TokenType.BANG().name(), bang);
+  fun minus(expr, right) {
+    checkNumberOperand(expr.operator(), right);
+    return -right;
+  }
+  map.put(TokenType.MINUS().name(), minus);
+  return map;
+}
+
+fun initBinaryBuiltins() {
+  var map = HashMap(16, 0.75);
+  fun bangEqual(expr, left, right) { return !isEqual(left, right); }
+  map.put(TokenType.BANG_EQUAL().name(), bangEqual);
+  fun equal(expr, left, right) { return isEqual(left, right); }
+  map.put(TokenType.EQUAL_EQUAL().name(), equal);
+  fun greater(expr, left, right) {
+    //checkNumberOperands(expr.operator(), left, right);
+    return left > right;
+  }
+  map.put(TokenType.GREATER().name(), greater);
+  fun greaterEqual(expr, left, right) {
+    //checkNumberOperands(expr.operator(), left, right);
+    return left >= right;
+  }
+  map.put(TokenType.GREATER_EQUAL().name(), greaterEqual);
+  fun less(expr, left, right) {
+    //checkNumberOperands(expr.operator(), left, right);
+    return left < right;
+  }
+  map.put(TokenType.LESS().name(), less);
+  fun lessEqual(expr, left, right) {
+    //checkNumberOperands(expr.operator(), left, right);
+    return left <= right;
+  }
+  map.put(TokenType.LESS_EQUAL().name(), lessEqual);
+  fun minus(expr, left, right) {
+    //checkNumberOperands(expr.operator(), left, right);
+    return left - right;
+  }
+  map.put(TokenType.MINUS().name(), minus);
+  fun plus(expr, left, right) {
+    if (klass(left) == Double and klass(right) == Double) {
+      return left + right;
+    }
+    if (klass(left) == String and klass(right) == String) {
+      return left + right;
+    }
+    throw(RuntimeError(expr.operator(),
+        "Operands must be two numbers or two strings."));
+  }
+  map.put(TokenType.PLUS().name(), plus);
+  fun slash(expr, left, right) {
+    checkNumberOperands(expr.operator(), left, right);
+    return left / right;
+  }
+  map.put(TokenType.SLASH().name(), slash);
+  fun star(expr, left, right) {
+    checkNumberOperands(expr.operator(), left, right);
+    return left * right;
+  }
+  map.put(TokenType.STAR().name(), star);
+  return map;
+}
+
+var visitor = Visitor();
+var interpreter = nil;
+var globals = Environment(nil);
+var unaryBuiltins = initUnaryBuiltins();
+var binaryBuiltins = initBinaryBuiltins();
+
+fun clock() {
+  static(import("java.lang.System")).currentTimeMillis() / 1000.0;
+}
+globals.define("clock", clock);
+  
+class Interpreter {
+  init() {
+    this.environment = globals;
+    this.locals = nil;
+  }  
+
+  interpret(statements, locals) {
+    this.locals = locals;
+    
+    
+    fun action() { statements.forEach(this.execute); }
+    fun recovery(e) { runtimeError(e); }
+    try(action, RuntimeError, recovery);
+  }
+
+  evaluate(expr) {
+    return visitor.call(expr);
+  }
+
+  execute(stmt) {
+    visitor.call(stmt);
+  }
+
+  executeBlock(statements, environment) {
+    var previous = this.environment;
+    fun action() { statements.forEach(this.execute); }
+    fun cleanup() { this.environment = previous; }
+    tryFinally(action, cleanup);
+  }
+
+  
+  visitBlockStmt(stmt) {
+    this.executeBlock(stmt.statements(), Environment(this.environment));
+  }
+  
+  visitClassStmt(stmt) {
+    this.environment.define(stmt.name().lexeme(), nil);
+    
+    var methods = HashMap(16, 0.75);
+    var superclass = nil;
+    if (stmt.superclass() != nil) {
+      superclass = this.evaluate(stmt.superclass());
+      if (klass(superclass) != LoxClass) {
+        throw(RuntimeError(stmt.name(),
+            "Superclass must be a class."));
+      }
+      
+      this.environment = Environment(this.environment);
+      this.environement.define("super", superclass);
+    }
+    
+    fun action(method) {
+      var function = LoxFunction(method, this.environment,
+        method.name().lexeme().equals("init"));
+      methods.put(method.name().lexeme(), function);
+    }
+    stmt.methods().forEach(action);
+  
+    var klass = LoxClass(stmt.name().lexeme(),
+        superclass, methods);
+    
+    if (superclass != nil) {
+      this.environment = environment.enclosing;
+    }
+  
+    this.environment.assign(stmt.name(), klass);
+  }
+
+  visitExpressionStmt(stmt) {
+    this.evaluate(stmt.expression());
+  }
+
+  visitFunctionStmt(stmt) {
+    this.environment.define(stmt.name().lexeme(), nil);
+    
+    var closure = this.environment;
+    var parameters = stmt.declaration().parameters;
+    var body = stmt.body();
+    fun function(arguments) {
+      fun action(arguments) {
+        var environment = Environment(closure);
+        fun consumer(i) {
+          environment.define(parameters.get(i).lexeme(), arguments.get(i));
+        }
+        IntStream.range(0, parameters.size()).forEach(consumer);
+        this.executeBlock(body, environment);
+      }
+      fun rescue(returnValue) { return returnValue.value; }
+      return try(action, Return, rescue);
+    }
+    
+    this.environment.assign(stmt.name(), function);
+  }
+
+  visitIfStmt(stmt) {
+    if (isTruthy(this.evaluate(stmt.condition()))) {
+      this.execute(stmt.thenBranch());
+    } else if (stmt.elseBranch() != nil) {
+      this.execute(stmt.elseBranch());
+    }
+  }
+  
+  visitPrintStmt(stmt) {
+    var value = this.evaluate(stmt.expression());
+    print stringify(value);
+  }
+  
+  visitReturnStmt(stmt) {
+    var value = nil;
+    if (stmt.value() != nil) value = this.evaluate(stmt.value());
+    
+    throw(Return(value));
+  }
+
+  visitVarStmt(stmt) {
+    var value = nil; 
+    if (stmt.initializer() != nil) {
+      value = this.evaluate(stmt.initializer());
+    }
+    
+    this.environment.define(stmt.name().lexeme(), value);
+  }
+  
+  visitWhileStmt(stmt) {
+    while(isTrusty(this.evaluate(stmt.condition()))) {
+      this.evaluate(stmt.body());
+    }
+  }
+  
+  visitAssignExpr(expr) {
+    var value = this.evaluate(expr.value());
+    var distance = this.locals.get(expr);
+    if (distance != nil) {
+      this.environment.assignAt(distance, expr.name(), value);
+    } else {
+      globals.assign(expr.name(), value);
+    }
+    return value;
+  }
+  
+  visitBinaryExpr(expr) {
+    var left = this.evaluate(expr.left());
+    var right = this.evaluate(expr.right());
+    var op = binaryBuiltins.get(expr.operator().name());
+    return op(expr, left, right);
+  }  
+
+  visitCallExpr(expr) {
+    var callee = this.evaluate(expr.callee());
+    
+    var arguments = expr.arguments().stream()
+      .map(this.evaluate)
+      .collect1(Collectors.toList());
+      
+    if (klass(callee) != LoxFunction) {
+      // TODO: Change error message to not mention classes explicitly
+      // since this shows up before classes are implemented.
+      throw(RuntimeError(expr.paren(),
+          "Can only call functions and classes."));
+    }
+    
+    if (arguments.size() < callee.declaration().parameters().size()) {
+      throw(RuntimeError(expr.paren(), "Not enough arguments."));
+    }  
+    
+    return callee(this, arguments);
+  }
+
+  visitGetExpr(expr) {
+    var object = this.evaluate(expr.object());
+    if (klass(object) == LoxInstance) {
+      return objet.getProperty(exp.name());
+    }
+    
+    throw(RuntimeError(expr.name(),
+        "Only instances have properties."));
+  }
+  
+  visitGroupingExpr(expr) {
+    return this.evaluate(expr.expression());
+  }
+  
+  visitLiteralExpr(expr) {
+    return expr.value();
+  }
+
+  visitLogicalExpr(expr) {
+    var left = this.evaluate(expr.left());
+    
+    if (expr.operator().type() == TokenType.OR and isTruthy(left)) {
+      return left;
+    }
+    
+    if (expr.operator().type() == TokenType.AND and !isTruthy(left)) {
+      return left;
+    }
+    
+    return this.evaluate(expr.right());
+  }
+
+  visitSetExpr(expr) {
+    var value = this.evaluate(expr.value());
+    var object = this.evaluate(expr.object());
+    
+    if (klass(object) == LoxInstance) {
+      object.fields().put(expr.name().lexeme(), value);
+      return value;
+    }
+    
+    throw(RuntimeError(expr.name(), "Only instances have fields."));
+  }
+
+  visitSuperExpr(expr) {
+    var distance = this.locals.get(expr);
+    var superclass = this.environment.getAt(distance, "super");
+    
+    // "this" is always one level nearer than "super"'s environment.
+    var receiver = this.environment.getAt(distance - 1, "super");
+    
+    var method = superclass.findMethod(receiver, expr.method().lexeme());
+    if (method == nil) {
+      throw(RuntimeError(expr.method(),
+          "Undefined property '" + expr.method().lexeme() + "'."));
+    }
+  }
+
+  visitThisExpr(expr) {
+    return this.lookUpVariable(expr.keyword(), expr);
+  }
+  
+  visitUnaryExpr(expr) {
+    var right = this.evaluate(expr.rigth());
+    var op = unaryBuiltins.get(expr.operator().type().name());
+    return op(right);
+  }
+  
+  visitVariableExpr(expr) {
+    return this.lookUpVariable(expr.name(), expr);
+  }
+  
+  lookUpVariable(name, expr) {
+    var distance = this.locals.get(expr);
+    if (distance != nil) {
+      return this.environment.getAt(distance, name.lexeme());
+    } else {
+      return globals.get(name);
+    }
+  }
+}
+
+fun checkNumberOperand(operator, operand) {
+  if (klass(operand) == Double) return;
+  throw(RuntimeError(operator, "Operand must be a number."));
+}
+
+fun checkNumberOperands(operator, left, right) {
+  if (klass(left) == Double and klass(right) == Double) return;
+  // [operand]
+  throw(RuntimeError(operator, "Operands must be numbers."));
+}
+
+fun isTruthy(object) {
+  if (object == nil) return false;
+  if (klass(object) == Boolean) return object;
+  return true;
+}
+fun isEqual(a, b) {
+  // nil is only equal to nil.
+  if (a == nil and b == nil) return true;
+  if (a == nil) return false;
+
+  return a.equals(b);
+}
+
+fun stringify(object) {
+  if (object == nil) return "nil";
+
+  // Hack. Work around Java adding ".0" to integer-valued doubles.
+  if (klass(object) == Double) {
+    var text = wrap(object).toString();
+    if (text.endsWith(".0")) {
+      text = wrap(text).substring2(0, wrap(text).length() - 2);
+    }
+    return text;
+  }
+  
+  return asString(object);
+}
+
+fun runtimeError(error) {
+  print(error.getMessage() +
+      "\n[indylox interpreter: line " + static(Double).toString(error.token().line()) + "]");
+  throw(RuntimeException(error.getMessage(), error));
+}
+
+var args = ARGS();
+if (args.isEmpty()) {
+  print "indylox interpreter.lox file.lox";
+  throw(RuntimeException("no lox file specified.", nil));
+}
+
+var statements = parse(args.get(0));
+if (Lox.hadError()) throw(RuntimeException("parsing error"));
+
+var locals = resolve(statements);
+if (Lox.hadError()) throw(RuntimeException("resolver error"));
+
+interpreter = Interpreter();
+visitor.register(StmtBlock, interpreter.visitBlockStmt);
+visitor.register(StmtClass, interpreter.visitClassStmt);
+visitor.register(StmtExpression, interpreter.visitExpressionStmt);
+visitor.register(StmtFunction, interpreter.visitFunctionStmt);
+visitor.register(StmtIf, interpreter.visitIfStmt);
+visitor.register(StmtPrint, interpreter.visitPrintStmt);
+visitor.register(StmtReturn, interpreter.visitReturnStmt);
+visitor.register(StmtVar, interpreter.visitVarStmt);
+visitor.register(StmtWhile, interpreter.visitWhileStmt);
+
+visitor.register(ExprAssign, interpreter.visitAssignExpr);
+visitor.register(ExprBinary, interpreter.visitBinaryExpr);
+visitor.register(ExprCall, interpreter.visitCallExpr);
+visitor.register(ExprGet, interpreter.visitGetExpr);
+visitor.register(ExprGrouping, interpreter.visitGroupingExpr);
+visitor.register(ExprLiteral, interpreter.visitLiteralExpr);
+visitor.register(ExprLogical, interpreter.visitLogicalExpr);
+visitor.register(ExprSet, interpreter.visitSetExpr);
+visitor.register(ExprSuper, interpreter.visitSuperExpr);
+visitor.register(ExprThis, interpreter.visitThisExpr);
+visitor.register(ExprUnary, interpreter.visitUnaryExpr);
+visitor.register(ExprVariable, interpreter.visitVariableExpr);
+
+interpreter.interpret(statements, locals);
+
+
+

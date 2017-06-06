@@ -1,0 +1,11 @@
+var RuntimeException = import("java.lang.RuntimeException");
+
+fun oops() {
+  throw(RuntimeException("oops", null));
+}
+
+
+fun action() { oops(); }
+fun error(e) { print e; }
+try(action, RuntimeException, error);
+

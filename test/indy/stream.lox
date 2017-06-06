@@ -1,0 +1,22 @@
+var ArrayList = import("java.util.ArrayList");
+var Collections = static(import("java.util.Collections"));
+var Collectors = static(import("java.util.stream.Collectors"));
+var IntStream = static(import("java.util.stream.IntStream"));
+
+var empty = Collections.emptyList();
+var list = ArrayList(empty);
+list.add1("one");
+list.add1("two");
+
+fun transform(element) {
+  // need wrap here because it's a String !
+  return wrap(element).length();
+}
+var list2 = list.stream().map(transform).collect1(Collectors.toList());
+print list2.toString();
+
+fun consumer(i) {
+  print i;
+}
+IntStream.range(0, 10).forEach(consumer);
+

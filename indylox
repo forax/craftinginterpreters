@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-java -cp build/java com.craftinginterpreters.lox.IndyLox $@
+java -cp build/java:lib/asm-debug-all-6.0_ALPHA2.jar com.craftinginterpreters.lox.IndyLox $@

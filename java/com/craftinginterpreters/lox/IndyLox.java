@@ -11,6 +11,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Parameter;
 import java.lang.reflect.Proxy;
+import java.lang.reflect.UndeclaredThrowableException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -25,7 +26,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
-// Warning, unlike the other Java file, IndyLox requires Java 8 !
+// Warning, unlike the other Java files, IndyLox requires Java 8 !
 public class IndyLox {
   static final Interpreter INTERPRETER;
   private static final Field LOXINSTANCE_KLASS = getField(LoxInstance.class, "klass");
@@ -49,7 +50,10 @@ public class IndyLox {
   static final ClassValue<LoxInstance> STATIC_CACHE = new ClassValue<LoxInstance>() {
     @Override
     protected LoxInstance computeValue(Class<?> type) {
-      LoxClass loxClass = new LoxClass(type.getName() + "$static", null, gatherMethods(type, true));
+      HashMap<String, LoxFunction> functionMap = new HashMap<>();
+      functionMap.putAll(gatherFields(type, true));
+      functionMap.putAll(gatherMethods(type, true));
+      LoxClass loxClass = new LoxClass(type.getName() + "$static", null, functionMap);
       return new LoxInstance(loxClass);
     }
   };
@@ -66,10 +70,13 @@ public class IndyLox {
     Environment globals = interpreter.globals;
     globals.define("import", asCallable(1, arguments -> CLASS_CACHE.get(forName((String) arguments.get(0)))));
     globals.define("static", asCallable(1, arguments -> STATIC_CACHE.get(toClass((LoxClass)arguments.get(0)))));
-    globals.define("klass", asCallable(1, arguments -> getKlass((LoxInstance)arguments.get(0))));
+    globals.define("klass", asCallable(1, arguments -> getKlass(arguments.get(0))));
     globals.define("wrap", asCallable(1, arguments -> wrap(arguments.get(0))));
     globals.define("unwrap", asCallable(1, arguments -> unwrap(arguments.get(0))));
     globals.define("unboxTo", asCallable(1, arguments -> unboxTo(arguments.get(0), toClass((LoxClass)arguments.get(1)))));
+    globals.define("asString", asCallable(1, arguments -> asString(arguments.get(0))));
+    globals.define("try", asCallable(3, arguments -> tryRescue((LoxFunction)arguments.get(0), (LoxClass)arguments.get(1), (LoxFunction)arguments.get(2))));
+    globals.define("throw", asCallable(1, arguments -> { throw (RuntimeException)unwrap(arguments.get(0)); }));
     globals.define("$bridge", asCallable(2, arguments -> {
       Member member = (Member)arguments.get(0);
       LoxInstance thiz = (LoxInstance)arguments.get(1);
@@ -89,8 +96,14 @@ public class IndyLox {
         Object result = constructor.newInstance(args);
         thiz.fields.put("wrapped", result);
         return thiz;
-      } catch(IllegalAccessException | InstantiationException | InvocationTargetException e) {
-        throw new RuntimeError(token(""), e.getMessage());
+      } catch(InvocationTargetException e) {
+        Throwable cause = e.getCause();
+        if (cause instanceof RuntimeException) {
+          throw (RuntimeException)cause;
+        }
+        throw new UndeclaredThrowableException(cause);
+      } catch(IllegalAccessException | InstantiationException e) {
+        throw new AssertionError(e);
       }
     }));
     
@@ -109,6 +122,11 @@ public class IndyLox {
       Parser parser = new Parser(tokens);
       return wrap(parser.parse());
     }));
+    globals.define("resolve", asCallable(1, arguments -> {
+      @SuppressWarnings("unchecked")
+      List<Stmt> statements = (List<Stmt>)unwrap(arguments.get(0));
+      return wrap(new Resolver().resolve(statements));
+    }));
     globals.define("ARGS", asCallable(0, __ -> wrap(ARGS)));
     
     INTERPRETER = interpreter;
@@ -118,7 +136,7 @@ public class IndyLox {
     try {
       return Class.forName(name);
     } catch (ClassNotFoundException e) {
-      throw new RuntimeError(token(""), e.getMessage());
+      throw (RuntimeError)new RuntimeError(token(""), e.getMessage()).initCause(e);
     }
   }
   
@@ -136,15 +154,25 @@ public class IndyLox {
     };
   }
   
-  
-  
   static Map<String, LoxFunction> gatherMethods(Class<?> type, boolean isStatic) {
-    Map<String, Method> methodMap =
+    Map<String, Map<Integer, Method>> methodMap =
         Arrays.stream(type.getMethods())
         .filter(m -> Modifier.isStatic(m.getModifiers()) == isStatic)
         .filter(IndyLox::isNotDeprecated)
-        .collect(Collectors.toMap(Method::getName, Function.identity(), IndyLox::moreSpecific));
-    return methodMap.entrySet().stream().collect(Collectors.toMap(e -> e.getKey(), e -> asFunction(e.getValue())));
+        .peek(f -> f.setAccessible(true))   //FIXME
+        .collect(Collectors.groupingBy(Method::getName,
+                   Collectors.toMap(m -> m.getParameterCount(), Function.identity(), IndyLox::moreSpecific)));
+    HashMap<String, LoxFunction> functionMap = new HashMap<>();
+    methodMap.forEach((name, implMap) -> {
+      if (implMap.size() == 1) {  // overloads all have the same parameter count
+        functionMap.put(name, asFunction(implMap.values().iterator().next()));
+      } else {
+        implMap.forEach((count, method) -> {
+          functionMap.put(name + count, asFunction(method));
+        });
+      }
+    });
+    return functionMap;
   }
   
   static Map<String, LoxFunction> gatherFields(Class<?> type, boolean isStatic) {
@@ -155,7 +183,7 @@ public class IndyLox {
   }
   
   static Optional<LoxFunction> gatherInit(Class<?> type) {
-    return Arrays.stream(type.getConstructors())
+    return Arrays.stream(type.getDeclaredConstructors())
       .filter(IndyLox::isNotDeprecated)
       .reduce(IndyLox::moreSpecific)
       .map(IndyLox::asFunction);
@@ -187,7 +215,7 @@ public class IndyLox {
       if (methodType == existingType) {
         continue;
       }
-      // type are not comparable, choose by lexicographic order of their name, at least this is a stable order
+      // type are not comparable, choose by lexicographic order of their name, at least it's a stable order
       return methodType.getName().compareTo(existingType.getName()) > 0? method: existing;
     }
     
@@ -323,9 +351,34 @@ public class IndyLox {
     }
     return loxObject;
   }
+  static String asString(Object loxObject) {
+    if (loxObject == null) {
+      return "null";
+    }
+    if (loxObject instanceof LoxInstance) {
+      LoxInstance instance = (LoxInstance)loxObject;
+      if (getKlass(loxObject).name.indexOf(".") != -1) {
+        return instance.fields.get("wrapped").toString();
+      }
+    }
+    return loxObject.toString();
+  }
 
   private static Object lambdaProxy(LoxFunction function, Class<?> type) {
     return Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[] { type },  (proxy, method, args) -> {
+      if (method.getDeclaringClass() == Object.class) {
+        switch(method.getName()) {
+        case "toString":
+          return function.toString();
+        case "equals":
+          return proxy == args[0];
+        case "hashCode":
+          return function.hashCode();
+        default:
+          throw new AssertionError("unsupported " + method);
+        }
+      }
+      
       List<Object> arguments = Arrays.stream(args).map(arg -> box(arg)).collect(Collectors.toList());
       return unboxTo(function.call(INTERPRETER, arguments), method.getReturnType());
     });
@@ -333,6 +386,17 @@ public class IndyLox {
   
   private static Class<?> toClass(LoxClass loxClass) {
     return (Class<?>)unboxTo(loxClass, Class.class);
+  }
+  
+  private static Object tryRescue(LoxFunction action, LoxClass klass, LoxFunction error) {
+    try {
+      return action.call(INTERPRETER, Arrays.asList());
+    } catch(RuntimeException e) {
+      if (toClass(klass).isInstance(e)) {
+        return error.call(INTERPRETER, Arrays.asList(wrap(e)));
+      }
+      throw e;
+    }
   }
   
   private static Field getField(Class<?> clazz, String name) {
@@ -346,13 +410,17 @@ public class IndyLox {
     return field;
   }
   
-  private static LoxClass getKlass(LoxInstance instance) {
-    try {
-      return (LoxClass)LOXINSTANCE_KLASS.get(instance);
-    } catch (IllegalAccessException e) {
-      throw new AssertionError(e);
+  private static LoxClass getKlass(Object loxObject) {
+    if (loxObject instanceof LoxInstance) {
+      try {
+        return (LoxClass)LOXINSTANCE_KLASS.get(loxObject);
+      } catch (IllegalAccessException e) {
+        throw new AssertionError(e);
+      }
     }
+    return CLASS_CACHE.get(loxObject.getClass());
   }
+  
   @SuppressWarnings("unchecked")
   private static Map<Expr, Integer> getLocals(Interpreter interpreter) {
     try {

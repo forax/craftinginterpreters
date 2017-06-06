@@ -6,4 +6,4 @@ print b.wrapped;
 
 print b.toString();
 
-print wrap("foobar").substring(0, 3);
+print wrap("foobar").substring1(3);
