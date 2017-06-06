@@ -1,6 +1,7 @@
 // this code requires the indylox lox <-> java bridge !
 
 var RuntimeException = import("java.lang.RuntimeException");
+var System = static(import("java.lang.System"));
 var HashMap = import("java.util.HashMap");
 
 var IntStream = static(import("java.util.stream.IntStream"));
@@ -61,7 +62,7 @@ class Visitor {
       throw(RuntimeException("no action for: " + asString(klass(value)), nil));
     }
     
-    print "visit " + asString(klass(value));
+    //print "visit " + asString(klass(value)); //DEBUG
     return action(value);
   } 
 }
@@ -90,27 +91,27 @@ fun initBinaryBuiltins() {
   fun equal(expr, left, right) { return isEqual(left, right); }
   map.put(TokenType.EQUAL_EQUAL().name(), equal);
   fun greater(expr, left, right) {
-    //checkNumberOperands(expr.operator(), left, right);
+    checkNumberOperands(expr.operator(), left, right);
     return left > right;
   }
   map.put(TokenType.GREATER().name(), greater);
   fun greaterEqual(expr, left, right) {
-    //checkNumberOperands(expr.operator(), left, right);
+    checkNumberOperands(expr.operator(), left, right);
     return left >= right;
   }
   map.put(TokenType.GREATER_EQUAL().name(), greaterEqual);
   fun less(expr, left, right) {
-    //checkNumberOperands(expr.operator(), left, right);
+    checkNumberOperands(expr.operator(), left, right);
     return left < right;
   }
   map.put(TokenType.LESS().name(), less);
   fun lessEqual(expr, left, right) {
-    //checkNumberOperands(expr.operator(), left, right);
+    checkNumberOperands(expr.operator(), left, right);
     return left <= right;
   }
   map.put(TokenType.LESS_EQUAL().name(), lessEqual);
   fun minus(expr, left, right) {
-    //checkNumberOperands(expr.operator(), left, right);
+    checkNumberOperands(expr.operator(), left, right);
     return left - right;
   }
   map.put(TokenType.MINUS().name(), minus);
@@ -123,6 +124,7 @@ fun initBinaryBuiltins() {
     }
     throw(RuntimeError(expr.operator(),
         "Operands must be two numbers or two strings."));
+    return left + right;
   }
   map.put(TokenType.PLUS().name(), plus);
   fun slash(expr, left, right) {
@@ -197,12 +199,12 @@ class Interpreter {
       }
       
       this.environment = Environment(this.environment);
-      this.environement.define("super", superclass);
+      this.environment.define("super", superclass);
     }
     
     fun action(method) {
       var function = LoxFunction(method, this.environment,
-        method.name().lexeme().equals("init"));
+        method.name().lexeme() == "init");
       methods.put(method.name().lexeme(), function);
     }
     stmt.methods().forEach(action);
@@ -225,7 +227,7 @@ class Interpreter {
     this.environment.define(stmt.name().lexeme(), nil);
     
     var closure = this.environment;
-    var parameters = stmt.declaration().parameters;
+    var parameters = stmt.parameters();
     var body = stmt.body();
     fun function(arguments) {
       fun action(arguments) {
@@ -273,7 +275,7 @@ class Interpreter {
   }
   
   visitWhileStmt(stmt) {
-    while(isTrusty(this.evaluate(stmt.condition()))) {
+    while(isTruthy(this.evaluate(stmt.condition()))) {
       this.evaluate(stmt.body());
     }
   }
@@ -292,7 +294,7 @@ class Interpreter {
   visitBinaryExpr(expr) {
     var left = this.evaluate(expr.left());
     var right = this.evaluate(expr.right());
-    var op = binaryBuiltins.get(expr.operator().name());
+    var op = binaryBuiltins.get(expr.operator().type().name());
     return op(expr, left, right);
   }  
 
@@ -310,7 +312,7 @@ class Interpreter {
           "Can only call functions and classes."));
     }
     
-    if (arguments.size() < callee.declaration().parameters().size()) {
+    if (arguments.size() < wrap(callee).parameters().size()) {
       throw(RuntimeError(expr.paren(), "Not enough arguments."));
     }  
     
@@ -380,7 +382,7 @@ class Interpreter {
   }
   
   visitUnaryExpr(expr) {
-    var right = this.evaluate(expr.rigth());
+    var right = this.evaluate(expr.right());
     var op = unaryBuiltins.get(expr.operator().type().name());
     return op(right);
   }
@@ -420,7 +422,7 @@ fun isEqual(a, b) {
   if (a == nil and b == nil) return true;
   if (a == nil) return false;
 
-  return a.equals(b);
+  return a == b;
 }
 
 fun stringify(object) {
@@ -429,7 +431,7 @@ fun stringify(object) {
   // Hack. Work around Java adding ".0" to integer-valued doubles.
   if (klass(object) == Double) {
     var text = wrap(object).toString();
-    if (text.endsWith(".0")) {
+    if (wrap(text).endsWith(".0")) {
       text = wrap(text).substring2(0, wrap(text).length() - 2);
     }
     return text;
@@ -440,8 +442,9 @@ fun stringify(object) {
 
 fun runtimeError(error) {
   print(error.getMessage() +
-      "\n[indylox interpreter: line " + static(Double).toString(error.token().line()) + "]");
-  throw(RuntimeException(error.getMessage(), error));
+      System.lineSeparator() +
+      "[line " + stringify(error.token().line()) + "]");
+  //throw(RuntimeException(error.getMessage(), error));
 }
 
 var args = ARGS();
