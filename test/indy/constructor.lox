@@ -1,4 +1,4 @@
 var Date = import("java.util.Date");
 var now = Date(0);
-print now.toString();
+print now.toString(); // expect: Thu Jan 01 01:00:00 CET 1970
 

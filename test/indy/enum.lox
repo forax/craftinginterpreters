@@ -1,8 +1,8 @@
 var TokenType = import("com.craftinginterpreters.lox.TokenType");
 var enum = static(TokenType);
 
-print enum.BANG();
-print enum.BANG().ordinal();
-print enum.BANG().name();
+print enum.BANG(); // expect: com.craftinginterpreters.lox.TokenType instance
+print enum.BANG().ordinal(); // expect: 11
+print enum.BANG().name(); // expect: BANG
 
 

@@ -2,6 +2,6 @@ var Point = import("java.awt.Point");
 
 var p = Point(2, 3);
 
-print p.x();
-print p.y();
+print p.x(); // expect: 2
+print p.y(); // expect: 3
 

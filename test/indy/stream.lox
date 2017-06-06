@@ -13,10 +13,5 @@ fun transform(element) {
   return wrap(element).length();
 }
 var list2 = list.stream().map(transform).collect1(Collectors.toList());
-print list2.toString();
-
-fun consumer(i) {
-  print i;
-}
-IntStream.range(0, 10).forEach(consumer);
+print list2.toString(); // expect: [3.0, 3.0]
 

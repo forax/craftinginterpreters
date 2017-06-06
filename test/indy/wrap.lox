@@ -1,9 +1,9 @@
 var s = "hello";
 var b = wrap(s);
 
-print b;
-print b.wrapped;
+print b; // expect: java.lang.String instance
+print b.wrapped; // expect: hello
 
-print b.toString();
+print b.toString(); // expect: hello
 
-print wrap("foobar").substring1(3);
+print wrap("foobar").substring1(3); // expect: bar

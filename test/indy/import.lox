@@ -1,2 +1,2 @@
 var String = import("java.lang.String");
-print String;
+print String; // expect: java.lang.String

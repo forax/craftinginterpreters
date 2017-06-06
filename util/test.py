@@ -57,8 +57,12 @@ def java_interpreter(name, tests):
   else:
     dir = 'build/gen/' + name
 
+  #jlox interpreter
+  #INTERPRETERS[name] = Interpreter(name, 'java',
+  #    ['java', '-cp', dir, 'com.craftinginterpreters.lox.Lox'], tests)
+  #indylox
   INTERPRETERS[name] = Interpreter(name, 'java',
-      ['java', '-cp', dir, 'com.craftinginterpreters.lox.Lox'], tests)
+      ['java', '-cp', dir, 'com.craftinginterpreters.lox.IndyLox'], tests)
   JAVA_SUITES.append(name)
 
 
@@ -357,7 +361,10 @@ c_interpreter('clox', {
 
   # These are just for earlier chapters.
   'test/scanning': 'skip',
-  'test/expressions': 'skip'
+  'test/expressions': 'skip',
+
+  # No Indy Java bridge
+  'test/indy': 'skip',
 })
 
 # TODO: Other chapters.
@@ -424,6 +431,9 @@ c_interpreter('chap21_global', {
   'test/super': 'skip',
   'test/this': 'skip',
   'test/variable/local_from_method.lox': 'skip',
+
+  # No Indy Java bridge
+  'test/indy': 'skip',
 })
 
 c_interpreter('chap22_local', {
@@ -473,6 +483,9 @@ c_interpreter('chap22_local', {
   'test/super': 'skip',
   'test/this': 'skip',
   'test/variable/local_from_method.lox': 'skip',
+
+  # No Indy Java bridge
+  'test/indy': 'skip',
 })
 
 c_interpreter('chap23_jumping', {
@@ -520,6 +533,9 @@ c_interpreter('chap23_jumping', {
   'test/super': 'skip',
   'test/this': 'skip',
   'test/variable/local_from_method.lox': 'skip',
+
+  # No Indy Java bridge
+  'test/indy': 'skip',
 })
 
 c_interpreter('chap24_calls', {
@@ -556,6 +572,9 @@ c_interpreter('chap24_calls', {
   'test/super': 'skip',
   'test/this': 'skip',
   'test/variable/local_from_method.lox': 'skip',
+
+  # No Indy Java bridge
+  'test/indy': 'skip',
 })
 
 c_interpreter('chap25_closures', {
@@ -583,6 +602,9 @@ c_interpreter('chap25_closures', {
   'test/super': 'skip',
   'test/this': 'skip',
   'test/variable/local_from_method.lox': 'skip',
+
+  # No Indy Java bridge
+  'test/indy': 'skip',
 })
 
 c_interpreter('chap26_garbage', {
@@ -610,6 +632,9 @@ c_interpreter('chap26_garbage', {
   'test/super': 'skip',
   'test/this': 'skip',
   'test/variable/local_from_method.lox': 'skip',
+
+  # No Indy Java bridge
+  'test/indy': 'skip',
 })
 
 c_interpreter('chap27_classes', {
@@ -637,6 +662,9 @@ c_interpreter('chap27_classes', {
   'test/return/in_method.lox': 'skip',
   'test/this': 'skip',
   'test/variable/local_from_method.lox': 'skip',
+
+  # No Indy Java bridge
+  'test/indy': 'skip',
 })
 
 c_interpreter('chap28_methods', {
@@ -650,6 +678,9 @@ c_interpreter('chap28_methods', {
   'test/class/inherited_method.lox': 'skip',
   'test/inheritance': 'skip',
   'test/super': 'skip',
+  
+  # No Indy Java bridge
+  'test/indy': 'skip',
 })
 
 c_interpreter('chap29_superclasses', {
@@ -658,6 +689,9 @@ c_interpreter('chap29_superclasses', {
   # These are just for earlier chapters.
   'test/scanning': 'skip',
   'test/expressions': 'skip',
+
+  # No Indy Java bridge
+  'test/indy': 'skip',
 })
 
 c_interpreter('chap30_optimization', {
@@ -666,6 +700,9 @@ c_interpreter('chap30_optimization', {
   # These are just for earlier chapters.
   'test/scanning': 'skip',
   'test/expressions': 'skip',
+
+  # No Indy Java bridge
+  'test/indy': 'skip',
 })
 
 class Test:

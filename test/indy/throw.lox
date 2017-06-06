@@ -7,5 +7,5 @@ fun oops() {
 
 fun action() { oops(); }
 fun error(e) { print e; }
-try(action, RuntimeException, error);
+try(action, RuntimeException, error); // expect: com.craftinginterpreters.lox.RuntimeError instance
 
