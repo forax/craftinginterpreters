@@ -9,6 +9,7 @@ var Collectors = static(import("java.util.stream.Collectors"));
 var Boolean = import("java.lang.Boolean");
 var Double = import("java.lang.Double");
 var String = import("java.lang.String");
+var Environment = import("com.craftinginterpreters.lox.Environment");
 var Lox = static(import("com.craftinginterpreters.lox.Lox"));
 var LoxClass = import("com.craftinginterpreters.lox.LoxClass");
 var LoxFunction = import("com.craftinginterpreters.lox.LoxFunction");
@@ -63,63 +64,6 @@ class Visitor {
     print "visit " + asString(klass(value));
     return action(value);
   } 
-}
-
-class Environment {
-  init(enclosing) {
-    this.enclosing = nil;
-    this.values = HashMap(16, 0.75);
-  }
-
-  get(name) {
-    if (this.values.containsKey(name.lexeme())) {
-      return this.values.get(name.lexeme());
-    }
-
-    if (this.enclosing != nil) return this.enclosing.get(name);
-
-    throw(RuntimeError(name,
-        "Undefined variable '" + name.lexeme() + "'."));
-  }
-
-  assign(name, value) {
-    if (this.values.containsKey(name.lexeme())) {
-      this.values.put(name.lexeme(), value);
-      return;
-    }
-
-    if (this.enclosing != nil) {
-      this.enclosing.assign(name, value);
-      return;
-    }
-
-    throw(RuntimeError(name,
-        "Undefined variable '" + name.lexeme() +"'."));
-  }
-
-  define(name, value) {
-    this.values.put(name, value);
-  }
-
-  getAt(distance, name) {
-    var environment = this;
-    var i = 0;
-    while(i < distance) {
-      environment = environment.enclosing;
-      i = i + 1;
-    }
-    return environment.values.get(name);
-  }
-
-  assignAt(distance, name, value) {
-    var environment = this;
-    var i = 0;
-    while (i < distance) {
-      environment = environment.enclosing;
-      i = i + 1;
-    }
-    environment.values.put(name.lexeme(), value);
-  }
 }
 
 fun tryFinally(action, cleanup) {
